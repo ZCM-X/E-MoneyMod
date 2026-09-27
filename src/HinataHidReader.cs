@@ -214,7 +214,6 @@ namespace EMoneyMod
                     {
                         ModLog.Debug("[EMoneyMod][HID] 检测到任意卡片, 完成假支付");
                         SetLed(0, 0, 255);
-                        EMoneySoundCompat.PlayTouch(FakeEMoney.LastBrandIndex);
                         ExternalCardReceiver.SignalCardFromHid();
                         break;
                     }

@@ -308,10 +308,9 @@ namespace EMoneyMod
         }
 
         /// <summary>
-        /// 刷卡命中时先放品牌音（事件 0），再按这段音效时长补点数入账音。
-        /// 这是 16:33 版本的品牌音行为。
+        /// 品牌音（事件 0）的时长，用来等它播完后再入账和播点数音。
         /// </summary>
-        internal static void PlayCreditDelayed(int brandIndex)
+        internal static int GetTouchDurationMs(int brandIndex)
         {
             int delay = WavDurationMs(PickId(brandIndex, 0));
             if (delay < 600)
@@ -322,18 +321,7 @@ namespace EMoneyMod
             {
                 delay = 3500;
             }
-
-            ThreadPool.QueueUserWorkItem(delegate
-            {
-                try
-                {
-                    Thread.Sleep(delay);
-                    PlayCredit();
-                }
-                catch
-                {
-                }
-            });
+            return delay;
         }
 
         /// <summary>
