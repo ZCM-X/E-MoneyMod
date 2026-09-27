@@ -266,10 +266,9 @@ namespace EMoneyMod
             }
 
             // 检测到 Type-A 但 SELECT_AID 还没成功时不要假完成。
-            // 继续轮询，等下一次抢到读卡器再补发 SELECT_AID，直到手机出对钩。
+            // 这里也不 InRelease，保持 RF 场，下一轮马上继续猛发 SELECT_AID。
             if (typeACard)
             {
-                TryRelease();
                 return false;
             }
 
@@ -308,8 +307,8 @@ namespace EMoneyMod
         /// </summary>
         private static bool TryTypeATUnionWithRetry()
         {
-            const int MaxAttempts = 180;
-            const int RetryWindowMs = 3200;
+            const int MaxAttempts = 900;
+            const int RetryWindowMs = 8000;
             byte[] selectAid = { 0x00, 0xA4, 0x04, 0x00, 0x08, 0xA0, 0x00, 0x00, 0x06, 0x32, 0x01, 0x01, 0x05 };
 
             bool selected = false;
@@ -328,16 +327,26 @@ namespace EMoneyMod
                     byte[] poll = Pn532Request(0x4A, new byte[] { 1, 0 }, 140);
                     if (poll.Length == 0 || poll[0] == 0)
                     {
-                        Jitter(8, 24);
+                        Jitter(2, 8);
                         continue;
                     }
 
-                    byte[] r = ApduOnce(selectAid, 420);
-                    if (r != null)
+                    // 单次激活后不要只发一条就放弃。hinata 可能刚好插进来，
+                    // 连续 burst 更容易抓住它没插队的空窗。
+                    for (int burst = 0; burst < 6; burst++)
                     {
-                        ModLog.Debug("[EMoneyMod][HID] Type-A SELECT_AID 成功(第 " + attempt + " 次, 共试 "
-                            + MaxAttempts + " 次): " + BitConverter.ToString(r));
-                        selected = true;
+                        byte[] r = ApduOnce(selectAid, 260);
+                        if (r != null)
+                        {
+                            ModLog.Debug("[EMoneyMod][HID] Type-A SELECT_AID 成功(第 " + attempt
+                                + " 轮, burst " + (burst + 1) + "): " + BitConverter.ToString(r));
+                            selected = true;
+                            break;
+                        }
+                        Jitter(0, 3);
+                    }
+                    if (selected)
+                    {
                         break;
                     }
                 }
@@ -346,7 +355,7 @@ namespace EMoneyMod
                 }
 
                 // 加一点随机抖动, 避免每一轮都正好踩在 hinata 轮询周期的同一个相位上。
-                Jitter(8, 24);
+                Jitter(2, 8);
             }
 
             if (!selected)
@@ -357,7 +366,7 @@ namespace EMoneyMod
             }
 
             // 让 RF 场再多撑一会儿, 给手机时间把"完成"提示显示出来。
-            Thread.Sleep(150);
+            Thread.Sleep(350);
 
             // 剩下两条尽力而为, 失败无所谓（实测经常失败, 不影响对钩）。
             ApduOnce(new byte[] { 0x00, 0xB0, 0x95, 0x00, 0x1E });
