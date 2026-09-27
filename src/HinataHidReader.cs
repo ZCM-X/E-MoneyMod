@@ -233,70 +233,61 @@ namespace EMoneyMod
 
         private static bool PollAnyCard()
         {
-            // 关键：FeliCa 命中后**不能直接 return**。
-            // iPhone 有时候会先以 FeliCa 形态应答，但真正能出对钩的是
-            // Type-A 的 T-Union SELECT_AID —— 如果这里提前返回，就会出现"有时不出对钩"。
-            bool anyCard = false;
-
-            // 1) 先 FeliCa，和 HINATA Go 一样。
-            try
-            {
-                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 });
-                if (felica.Length > 0 && felica[0] > 0)
-                {
-                    anyCard = true;
-                    ModLog.Debug("[EMoneyMod][HID] FeliCa poll 命中: " + BitConverter.ToString(felica));
-                    TryFelicaRead(felica);
-                }
-            }
-            catch (Exception e)
-            {
-                LogFirstError(e);
-            }
-
-            // 2) 再试 Type-A —— 即使 FeliCa 有响应也要照试。
+            // Apple Pay 出对钩依赖 Type-A 的 T-Union SELECT_AID。
+            // 先走 Type-A，避免 FeliCa 分支先读卡后把手机状态消耗掉。
+            bool typeACard = false;
             foreach (TypeARfProfile profile in ProfilesForProduct(_productId))
             {
+                if (!_running)
+                {
+                    return false;
+                }
                 try
                 {
                     SetTypeARfProfile(profile);
                     byte[] res = Pn532Request(0x4A, new byte[] { 1, 0 });
                     if (res.Length > 0 && res[0] > 0)
                     {
+                        typeACard = true;
                         _lastTypeAProfile = profile;
                         ModLog.Debug("[EMoneyMod][HID] Type-A 检测到卡片: " + BitConverter.ToString(res));
 
-                        TryTypeATUnionWithRetry();
-
-                        // 有些手机会先返回 Type-A，再重试一次 FeliCa。
-                        try
+                        if (TryTypeATUnionWithRetry())
                         {
-                            byte[] retry = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 });
-                            ModLog.Debug("[EMoneyMod][HID] FeliCa 重试 poll 返回: " + BitConverter.ToString(retry)
-                                + (retry.Length > 0 && retry[0] > 0 ? "  (命中)" : "  (无卡)"));
-                            if (retry.Length > 0 && retry[0] > 0)
-                            {
-                                TryFelicaRead(retry);
-                            }
+                            TryRelease();
+                            return true;
                         }
-                        catch (Exception e)
-                        {
-                            ModLog.Warning("[EMoneyMod][HID] FeliCa 重试 poll 失败: " + e.Message);
-                        }
-
-                        TryRelease();
-                        return true;
                     }
                 }
-                catch
+                catch (Exception e)
                 {
+                    LogFirstError(e);
                 }
             }
 
-            if (anyCard)
+            // 检测到 Type-A 但 SELECT_AID 还没成功时不要假完成。
+            // 继续轮询，等下一次抢到读卡器再补发 SELECT_AID，直到手机出对钩。
+            if (typeACard)
             {
                 TryRelease();
-                return true;
+                return false;
+            }
+
+            // Type-A 没命中时，再按普通 FeliCa 卡处理。
+            try
+            {
+                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 });
+                if (felica.Length > 0 && felica[0] > 0)
+                {
+                    ModLog.Debug("[EMoneyMod][HID] FeliCa poll 命中: " + BitConverter.ToString(felica));
+                    TryFelicaRead(felica);
+                    TryRelease();
+                    return true;
+                }
+            }
+            catch (Exception e)
+            {
+                LogFirstError(e);
             }
 
             return false;
@@ -317,12 +308,16 @@ namespace EMoneyMod
         /// </summary>
         private static bool TryTypeATUnionWithRetry()
         {
-            const int MaxAttempts = 25;
+            const int MaxAttempts = 180;
+            const int RetryWindowMs = 3200;
             byte[] selectAid = { 0x00, 0xA4, 0x04, 0x00, 0x08, 0xA0, 0x00, 0x00, 0x06, 0x32, 0x01, 0x01, 0x05 };
 
             bool selected = false;
-            for (int attempt = 1; attempt <= MaxAttempts && _running; attempt++)
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(RetryWindowMs);
+            int attempt = 0;
+            while (_running && attempt < MaxAttempts && DateTime.UtcNow < deadline)
             {
+                attempt++;
                 try
                 {
                     // 每一轮都重新配 RF 并重新激活目标。
@@ -330,14 +325,14 @@ namespace EMoneyMod
                     {
                         SetTypeARfProfile(_lastTypeAProfile);
                     }
-                    byte[] poll = Pn532Request(0x4A, new byte[] { 1, 0 });
+                    byte[] poll = Pn532Request(0x4A, new byte[] { 1, 0 }, 140);
                     if (poll.Length == 0 || poll[0] == 0)
                     {
-                        Jitter();
+                        Jitter(8, 24);
                         continue;
                     }
 
-                    byte[] r = ApduOnce(selectAid);
+                    byte[] r = ApduOnce(selectAid, 420);
                     if (r != null)
                     {
                         ModLog.Debug("[EMoneyMod][HID] Type-A SELECT_AID 成功(第 " + attempt + " 次, 共试 "
@@ -351,13 +346,13 @@ namespace EMoneyMod
                 }
 
                 // 加一点随机抖动, 避免每一轮都正好踩在 hinata 轮询周期的同一个相位上。
-                Jitter();
+                Jitter(8, 24);
             }
 
             if (!selected)
             {
-                ModLog.Debug("[EMoneyMod][HID] Type-A SELECT_AID " + MaxAttempts
-                    + " 次都没成功（读卡器被 hinata 占着）");
+                ModLog.Debug("[EMoneyMod][HID] Type-A SELECT_AID 在 " + RetryWindowMs
+                    + "ms / " + attempt + " 次内没成功，继续轮询");
                 return false;
             }
 
@@ -373,9 +368,14 @@ namespace EMoneyMod
         /// <summary>重试之间的随机小间隔（0~14ms），用来打散和 hinata 轮询周期的相位。</summary>
         private static void Jitter()
         {
+            Jitter(0, 15);
+        }
+
+        private static void Jitter(int minMs, int maxMs)
+        {
             try
             {
-                Thread.Sleep(Rng.Next(0, 15));
+                Thread.Sleep(Rng.Next(minMs, maxMs));
             }
             catch
             {
@@ -385,6 +385,11 @@ namespace EMoneyMod
         /// <summary>发一条 APDU；成功（PN532 状态 0x00 且 SW=9000）返回响应，否则返回 null。</summary>
         private static byte[] ApduOnce(byte[] apdu)
         {
+            return ApduOnce(apdu, 2500);
+        }
+
+        private static byte[] ApduOnce(byte[] apdu, int timeoutMs)
+        {
             byte[] payload = new byte[1 + apdu.Length];
             payload[0] = 0x01; // Tg
             Array.Copy(apdu, 0, payload, 1, apdu.Length);
@@ -392,7 +397,7 @@ namespace EMoneyMod
             byte[] res;
             try
             {
-                res = Pn532Request(0x40, payload);
+                res = Pn532Request(0x40, payload, timeoutMs);
             }
             catch
             {
@@ -509,20 +514,26 @@ namespace EMoneyMod
                 0x62,
                 0x87
             };
-            Pn532Request(0x32, payload);
+            Pn532Request(0x32, payload, 500);
         }
 
         private static byte[] Pn532Request(byte command, byte[] payload)
+        {
+            return Pn532Request(command, payload, 2500);
+        }
+
+        private static byte[] Pn532Request(byte command, byte[] payload, int timeoutMs)
         {
             byte[] packet = BuildPn532Packet(0xD4, command, payload);
             lock (IoLock)
             {
                 ClearReports();
                 WriteHinata(Pn532Header, packet);
-                DateTime deadline = DateTime.UtcNow.AddMilliseconds(2500);
+                DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
                 while (DateTime.UtcNow < deadline)
                 {
-                    byte[] report = WaitReport(0xE2, 300);
+                    int reportWait = Math.Max(1, Math.Min(300, timeoutMs));
+                    byte[] report = WaitReport(0xE2, reportWait);
                     if (report == null || report.Length < 8)
                     {
                         continue;

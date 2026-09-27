@@ -87,8 +87,6 @@ namespace EMoneyMod
             _waitingAime = true;
             _busyUntil = Environment.TickCount + 5000;
             ModLog.Info("等待刷卡: " + BrandNames[ClampBrand(brand)] + " +" + coin + " credit");
-            // 刷卡提示音：原版是终端开始等卡时推给游戏的，这里提前到开始等卡时放
-            EMoneySoundCompat.PlayTouch(LastBrandIndex);
         }
 
         internal static bool IsWaitingAime
