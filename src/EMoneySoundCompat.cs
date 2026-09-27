@@ -66,6 +66,13 @@ namespace EMoneyMod
             Play(brandIndex, 3);
         }
 
+        internal static int GetSuccessDurationMs(int brandIndex)
+        {
+            string id = PickId(brandIndex, 2);
+            int duration = WavDurationMs(id);
+            return duration > 0 ? duration : 900;
+        }
+
         private static void Play(int brandIndex, int eventId)
         {
             string id = PickId(brandIndex, eventId);
@@ -187,8 +194,8 @@ namespace EMoneyMod
                             matched++;
                             ModLog.Debug("[EMoneyMod][Sound] 品牌 " + gi + " <- 终端码 " + code
                                 + " (" + name + "): 刷卡=" + Show(ByEvent[gi][0])
-                                + " 成功=" + Show(ByEvent[gi][1])
-                                + " 失败=" + Show(ByEvent[gi][2])
+                                + " 失败=" + Show(ByEvent[gi][1])
+                                + " 成功=" + Show(ByEvent[gi][2])
                                 + " 重试=" + Show(ByEvent[gi][3]));
                         }
                     }
