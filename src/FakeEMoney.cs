@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
 using AMDaemon;
@@ -31,8 +30,6 @@ namespace EMoneyMod
         private static bool _waitingAime;
         private static bool _creditAdded;
         private static bool _cardRead;
-        private static bool _brandSoundPlayed;
-        private static bool _completionStarted;
 
         private static LazyCollection<EMoneyBrand> CreateBrands()
         {
@@ -90,8 +87,6 @@ namespace EMoneyMod
             _creditAdded = false;
             _waitingAime = true;
             _cardRead = false;
-            _brandSoundPlayed = false;
-            _completionStarted = false;
             _busyUntil = Environment.TickCount + 5000;
             ModLog.Info("等待刷卡: " + BrandNames[ClampBrand(brand)] + " +" + coin + " credit");
         }
@@ -124,54 +119,18 @@ namespace EMoneyMod
 
         internal static void OnAimeCardRead()
         {
-            if (!_waitingAime || _completionStarted)
-            {
-                return;
-            }
-
-            _waitingAime = false;
-            _cardRead = true;
-            _completionStarted = true;
-
-            if (!_brandSoundPlayed)
-            {
-                _brandSoundPlayed = true;
-                EMoneySoundCompat.PlaySuccess(LastBrandIndex);
-            }
-
-            int waitMs = EMoneySoundCompat.GetSuccessDurationMs(LastBrandIndex) + 120;
-            ModLog.Debug("[EMoneyMod] 品牌音播放 " + waitMs + "ms 后再入账点数");
-            try
-            {
-                MelonCoroutines.Start(FinishPaymentAfterBrandSound(waitMs));
-            }
-            catch (Exception e)
-            {
-                ModLog.Warning("启动品牌音后延迟入账失败，立即入账: " + e.Message);
-                FinishPaymentAfterBrandSoundNow();
-            }
-        }
-
-        private static IEnumerator FinishPaymentAfterBrandSound(int waitMs)
-        {
-            yield return new UnityEngine.WaitForSeconds(waitMs / 1000f);
-            if (_cardRead)
-            {
-                FinishPaymentAfterBrandSoundNow();
-            }
-        }
-
-        private static void FinishPaymentAfterBrandSoundNow()
-        {
-            if (!_completionStarted)
+            if (!_waitingAime)
             {
                 return;
             }
 
             EnsureCreditAdded();
+            _waitingAime = false;
+            _cardRead = true;
             _resultReady = true;
             _busyUntil = Environment.TickCount + 1500;
             ModLog.Info("刷卡完成: +" + _lastCoin + " credit, 当前余额 " + VirtualCredit.Balance);
+            EMoneySoundCompat.PlayCreditDelayed(LastBrandIndex);
         }
 
         internal static void EnsureCreditAdded()
@@ -184,15 +143,12 @@ namespace EMoneyMod
             int coin = _lastCoin <= 0 ? 1 : _lastCoin;
             VirtualCredit.Add(coin);
             ModLog.Debug("[EMoneyMod] 假支付点数已入账: +" + coin + " credit");
-            // 点数入账音和加点数同步：等价于游戏 Credit.CoinInHook 的 SE_SYS_CREDIT
-            EMoneySoundCompat.PlayCredit();
         }
 
         internal static void WaitAimeForever()
         {
             _waitingAime = true;
             _cardRead = false;
-            _completionStarted = false;
             _busyUntil = int.MaxValue;
             ModLog.Debug("[EMoneyMod] Aime 读卡器已就绪, 本次支付必须刷卡完成");
         }

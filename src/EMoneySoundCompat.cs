@@ -66,13 +66,6 @@ namespace EMoneyMod
             Play(brandIndex, 3);
         }
 
-        internal static int GetSuccessDurationMs(int brandIndex)
-        {
-            string id = PickId(brandIndex, 2);
-            int duration = WavDurationMs(id);
-            return duration > 0 ? duration : 900;
-        }
-
         private static void Play(int brandIndex, int eventId)
         {
             string id = PickId(brandIndex, eventId);
@@ -312,6 +305,35 @@ namespace EMoneyMod
             {
                 return 0;
             }
+        }
+
+        /// <summary>
+        /// 刷卡命中时先放品牌音（事件 0），再按这段音效时长补点数入账音。
+        /// 这是 16:33 版本的品牌音行为。
+        /// </summary>
+        internal static void PlayCreditDelayed(int brandIndex)
+        {
+            int delay = WavDurationMs(PickId(brandIndex, 0));
+            if (delay < 600)
+            {
+                delay = 600;
+            }
+            if (delay > 3500)
+            {
+                delay = 3500;
+            }
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    Thread.Sleep(delay);
+                    PlayCredit();
+                }
+                catch
+                {
+                }
+            });
         }
 
         /// <summary>
