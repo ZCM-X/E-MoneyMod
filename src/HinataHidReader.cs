@@ -233,9 +233,25 @@ namespace EMoneyMod
 
         private static bool PollAnyCard()
         {
+            // 先做一次 FeliCa 预探测，但不立刻完成支付。
+            // 这样普通 FeliCa 卡不会被 Type-A 的 RF 配置挡住；
+            // 如果同时是 Apple Pay，后面 Type-A SELECT_AID 成功后仍优先按 Apple Pay 处理。
+            byte[] felicaCandidate = null;
+            try
+            {
+                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 220);
+                if (felica.Length > 0 && felica[0] > 0)
+                {
+                    felicaCandidate = felica;
+                    ModLog.Debug("[EMoneyMod][HID] FeliCa 预探测命中: " + BitConverter.ToString(felica));
+                }
+            }
+            catch (Exception e)
+            {
+                LogFirstError(e);
+            }
+
             // Apple Pay 出对钩依赖 Type-A 的 T-Union SELECT_AID。
-            // 先走 Type-A，避免 FeliCa 分支先读卡后把手机状态消耗掉。
-            bool typeACard = false;
             foreach (TypeARfProfile profile in ProfilesForProduct(_productId))
             {
                 if (!_running)
@@ -248,62 +264,39 @@ namespace EMoneyMod
                     byte[] res = Pn532Request(0x4A, new byte[] { 1, 0 }, 180);
                     if (res.Length > 0 && res[0] > 0)
                     {
-                        typeACard = true;
                         _lastTypeAProfile = profile;
                         ModLog.Debug("[EMoneyMod][HID] Type-A 检测到卡片: " + BitConverter.ToString(res));
 
-                        if (TryTypeATUnionWithRetry())
+                        int retryWindowMs = felicaCandidate != null ? 1600 : 8000;
+                        if (TryTypeATUnionWithRetry(retryWindowMs))
                         {
                             TryRelease();
                             return true;
                         }
-                    }
-                }
-                catch (Exception e)
-                {
-                    LogFirstError(e);
-                }
-            }
 
-            // 检测到 Type-A 但 SELECT_AID 还没成功时不要假完成。
-            // 这里也不 InRelease，保持 RF 场，下一轮马上继续猛发 SELECT_AID。
-            if (typeACard)
-            {
-                // 也可能是被 Type-A 的假响应拖住了普通 FeliCa 卡。
-                // 给 FeliCa 一次快速兜底，避免普通卡被 Apple Pay 重试挡住。
-                try
-                {
-                    byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 220);
-                    if (felica.Length > 0 && felica[0] > 0)
-                    {
-                        ModLog.Debug("[EMoneyMod][HID] FeliCa 兜底命中: " + BitConverter.ToString(felica));
-                        TryFelicaRead(felica);
-                        TryRelease();
-                        return true;
+                        if (felicaCandidate != null)
+                        {
+                            ModLog.Debug("[EMoneyMod][HID] Type-A 未出钩, 回退普通 FeliCa");
+                            TryFelicaRead(felicaCandidate);
+                            TryRelease();
+                            return true;
+                        }
+                        return false;
                     }
                 }
                 catch (Exception e)
                 {
                     LogFirstError(e);
                 }
-                return false;
             }
 
             // Type-A 没命中时，再按普通 FeliCa 卡处理。
-            try
+            if (felicaCandidate != null)
             {
-                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 220);
-                if (felica.Length > 0 && felica[0] > 0)
-                {
-                    ModLog.Debug("[EMoneyMod][HID] FeliCa poll 命中: " + BitConverter.ToString(felica));
-                    TryFelicaRead(felica);
-                    TryRelease();
-                    return true;
-                }
-            }
-            catch (Exception e)
-            {
-                LogFirstError(e);
+                ModLog.Debug("[EMoneyMod][HID] FeliCa 普通卡处理");
+                TryFelicaRead(felicaCandidate);
+                TryRelease();
+                return true;
             }
 
             return false;
@@ -322,14 +315,13 @@ namespace EMoneyMod
         /// 所以这里把"重新配 RF -> 重新激活目标 -> SELECT_AID"反复重试，
         /// 总有一次能落在它的间隙里。
         /// </summary>
-        private static bool TryTypeATUnionWithRetry()
+        private static bool TryTypeATUnionWithRetry(int retryWindowMs)
         {
             const int MaxAttempts = 900;
-            const int RetryWindowMs = 8000;
             byte[] selectAid = { 0x00, 0xA4, 0x04, 0x00, 0x08, 0xA0, 0x00, 0x00, 0x06, 0x32, 0x01, 0x01, 0x05 };
 
             bool selected = false;
-            DateTime deadline = DateTime.UtcNow.AddMilliseconds(RetryWindowMs);
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(retryWindowMs);
             int attempt = 0;
             while (_running && attempt < MaxAttempts && DateTime.UtcNow < deadline)
             {
@@ -395,7 +387,7 @@ namespace EMoneyMod
 
             if (!selected)
             {
-                ModLog.Debug("[EMoneyMod][HID] Type-A SELECT_AID 在 " + RetryWindowMs
+                ModLog.Debug("[EMoneyMod][HID] Type-A SELECT_AID 在 " + retryWindowMs
                     + "ms / " + attempt + " 次内没成功，继续轮询");
                 return false;
             }
