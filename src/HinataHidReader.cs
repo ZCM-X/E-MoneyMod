@@ -239,7 +239,7 @@ namespace EMoneyMod
             byte[] felicaCandidate = null;
             try
             {
-                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 180);
+                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 });
                 if (felica.Length > 0 && felica[0] > 0)
                 {
                     felicaCandidate = felica;
@@ -251,10 +251,19 @@ namespace EMoneyMod
                 LogFirstError(e);
             }
 
+            // 和之前能刷的版本一致：FeliCa 一旦命中就按普通卡立即完成。
+            // 不再让普通卡进入 Type-A / Apple Pay 的重试流程。
+            if (felicaCandidate != null)
+            {
+                ModLog.Debug("[EMoneyMod][HID] FeliCa 普通卡命中, 直接完成");
+                TryFelicaRead(felicaCandidate);
+                TryRelease();
+                return true;
+            }
+
             // Apple Pay 出对钩依赖 Type-A 的 T-Union SELECT_AID。
             TypeARfProfile[] profiles = ProfilesForProduct(_productId);
-            int profileCount = felicaCandidate != null ? 1 : profiles.Length;
-            for (int profileIndex = 0; profileIndex < profileCount; profileIndex++)
+            for (int profileIndex = 0; profileIndex < profiles.Length; profileIndex++)
             {
                 if (!_running)
                 {
@@ -270,16 +279,9 @@ namespace EMoneyMod
                         _lastTypeAProfile = profile;
                         ModLog.Debug("[EMoneyMod][HID] Type-A 检测到卡片: " + BitConverter.ToString(res));
 
-                        int retryWindowMs = felicaCandidate != null ? 900 : 8000;
+                        int retryWindowMs = 8000;
                         if (TryTypeATUnionWithRetry(retryWindowMs))
                         {
-                            TryRelease();
-                            return true;
-                        }
-
-                        if (felicaCandidate != null)
-                        {
-                            ModLog.Debug("[EMoneyMod][HID] Type-A 未出钩, 按普通 FeliCa 完成");
                             TryRelease();
                             return true;
                         }
@@ -290,14 +292,6 @@ namespace EMoneyMod
                 {
                     LogFirstError(e);
                 }
-            }
-
-            // Type-A 没命中时，再按普通 FeliCa 卡处理。
-            if (felicaCandidate != null)
-            {
-                ModLog.Debug("[EMoneyMod][HID] FeliCa 普通卡命中, 直接完成");
-                TryRelease();
-                return true;
             }
 
             return false;
@@ -509,7 +503,7 @@ namespace EMoneyMod
 
             try
             {
-                byte[] res = Pn532Request(0x40, payload, 350);
+                byte[] res = Pn532Request(0x40, payload);
                 ModLog.Debug("[EMoneyMod][HID] FeliCa " + label + " 返回: " + BitConverter.ToString(res));
                 return res;
             }
