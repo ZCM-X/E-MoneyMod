@@ -252,12 +252,15 @@ namespace EMoneyMod
             }
 
             // Apple Pay 出对钩依赖 Type-A 的 T-Union SELECT_AID。
-            foreach (TypeARfProfile profile in ProfilesForProduct(_productId))
+            TypeARfProfile[] profiles = ProfilesForProduct(_productId);
+            int profileCount = felicaCandidate != null ? 1 : profiles.Length;
+            for (int profileIndex = 0; profileIndex < profileCount; profileIndex++)
             {
                 if (!_running)
                 {
                     return false;
                 }
+                TypeARfProfile profile = profiles[profileIndex];
                 try
                 {
                     SetTypeARfProfile(profile);
@@ -267,7 +270,7 @@ namespace EMoneyMod
                         _lastTypeAProfile = profile;
                         ModLog.Debug("[EMoneyMod][HID] Type-A 检测到卡片: " + BitConverter.ToString(res));
 
-                        int retryWindowMs = felicaCandidate != null ? 1600 : 8000;
+                        int retryWindowMs = felicaCandidate != null ? 700 : 8000;
                         if (TryTypeATUnionWithRetry(retryWindowMs))
                         {
                             TryRelease();
@@ -509,7 +512,7 @@ namespace EMoneyMod
 
             try
             {
-                byte[] res = Pn532Request(0x40, payload);
+                byte[] res = Pn532Request(0x40, payload, 350);
                 ModLog.Debug("[EMoneyMod][HID] FeliCa " + label + " 返回: " + BitConverter.ToString(res));
                 return res;
             }
