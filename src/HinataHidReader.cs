@@ -245,7 +245,7 @@ namespace EMoneyMod
                 try
                 {
                     SetTypeARfProfile(profile);
-                    byte[] res = Pn532Request(0x4A, new byte[] { 1, 0 });
+                    byte[] res = Pn532Request(0x4A, new byte[] { 1, 0 }, 180);
                     if (res.Length > 0 && res[0] > 0)
                     {
                         typeACard = true;
@@ -269,13 +269,30 @@ namespace EMoneyMod
             // 这里也不 InRelease，保持 RF 场，下一轮马上继续猛发 SELECT_AID。
             if (typeACard)
             {
+                // 也可能是被 Type-A 的假响应拖住了普通 FeliCa 卡。
+                // 给 FeliCa 一次快速兜底，避免普通卡被 Apple Pay 重试挡住。
+                try
+                {
+                    byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 220);
+                    if (felica.Length > 0 && felica[0] > 0)
+                    {
+                        ModLog.Debug("[EMoneyMod][HID] FeliCa 兜底命中: " + BitConverter.ToString(felica));
+                        TryFelicaRead(felica);
+                        TryRelease();
+                        return true;
+                    }
+                }
+                catch (Exception e)
+                {
+                    LogFirstError(e);
+                }
                 return false;
             }
 
             // Type-A 没命中时，再按普通 FeliCa 卡处理。
             try
             {
-                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 });
+                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 220);
                 if (felica.Length > 0 && felica[0] > 0)
                 {
                     ModLog.Debug("[EMoneyMod][HID] FeliCa poll 命中: " + BitConverter.ToString(felica));
@@ -317,6 +334,24 @@ namespace EMoneyMod
             while (_running && attempt < MaxAttempts && DateTime.UtcNow < deadline)
             {
                 attempt++;
+                if (attempt % 40 == 0)
+                {
+                    try
+                    {
+                        byte[] felicaFallback =
+                            Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 160);
+                        if (felicaFallback.Length > 0 && felicaFallback[0] > 0)
+                        {
+                            ModLog.Debug("[EMoneyMod][HID] Type-A 重试中 FeliCa 兜底命中: "
+                                + BitConverter.ToString(felicaFallback));
+                            TryFelicaRead(felicaFallback);
+                            return true;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
                 try
                 {
                     // 每一轮都重新配 RF 并重新激活目标。
@@ -523,7 +558,7 @@ namespace EMoneyMod
                 0x62,
                 0x87
             };
-            Pn532Request(0x32, payload, 500);
+            Pn532Request(0x32, payload, 250);
         }
 
         private static byte[] Pn532Request(byte command, byte[] payload)
