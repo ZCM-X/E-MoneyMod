@@ -233,13 +233,13 @@ namespace EMoneyMod
 
         private static bool PollAnyCard()
         {
-            // 先做一次 FeliCa 预探测，但不立刻完成支付。
-            // 这样普通 FeliCa 卡不会被 Type-A 的 RF 配置挡住；
-            // 如果同时是 Apple Pay，后面 Type-A SELECT_AID 成功后仍优先按 Apple Pay 处理。
+            // 分流原则：
+            //   FeliCa = 普通卡，只探测到就完成，不去做容易卡住的读服务。
+            //   Type-A = Apple Pay，只有这条路才走 SELECT_AID 出对钩。
             byte[] felicaCandidate = null;
             try
             {
-                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 220);
+                byte[] felica = Pn532Request(0x4A, new byte[] { 1, 1, 0x00, 0xFF, 0xFF, 0x01, 0x00 }, 180);
                 if (felica.Length > 0 && felica[0] > 0)
                 {
                     felicaCandidate = felica;
@@ -270,7 +270,7 @@ namespace EMoneyMod
                         _lastTypeAProfile = profile;
                         ModLog.Debug("[EMoneyMod][HID] Type-A 检测到卡片: " + BitConverter.ToString(res));
 
-                        int retryWindowMs = felicaCandidate != null ? 700 : 8000;
+                        int retryWindowMs = felicaCandidate != null ? 900 : 8000;
                         if (TryTypeATUnionWithRetry(retryWindowMs))
                         {
                             TryRelease();
@@ -279,8 +279,7 @@ namespace EMoneyMod
 
                         if (felicaCandidate != null)
                         {
-                            ModLog.Debug("[EMoneyMod][HID] Type-A 未出钩, 回退普通 FeliCa");
-                            TryFelicaRead(felicaCandidate);
+                            ModLog.Debug("[EMoneyMod][HID] Type-A 未出钩, 按普通 FeliCa 完成");
                             TryRelease();
                             return true;
                         }
@@ -296,8 +295,7 @@ namespace EMoneyMod
             // Type-A 没命中时，再按普通 FeliCa 卡处理。
             if (felicaCandidate != null)
             {
-                ModLog.Debug("[EMoneyMod][HID] FeliCa 普通卡处理");
-                TryFelicaRead(felicaCandidate);
+                ModLog.Debug("[EMoneyMod][HID] FeliCa 普通卡命中, 直接完成");
                 TryRelease();
                 return true;
             }
@@ -339,7 +337,6 @@ namespace EMoneyMod
                         {
                             ModLog.Debug("[EMoneyMod][HID] Type-A 重试中 FeliCa 兜底命中: "
                                 + BitConverter.ToString(felicaFallback));
-                            TryFelicaRead(felicaFallback);
                             return true;
                         }
                     }
